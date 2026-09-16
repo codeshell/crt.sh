@@ -47,10 +47,11 @@ const (
 	formatBurp
 )
 
-const defaultOutPath = "export"
-const rawResponseDir = "raw"
-const rawResponseHistoryDir = "history"
-const historyTimestampFormat = "20060102T150405Z"
+const defaultOutPath string = "export"
+const rawExtension string = "txt"
+const rawResponseDir string = "raw"
+const rawResponseHistoryDir string = "history"
+const historyTimestampFormat string = "20060102T150405Z"
 
 // ── Result structures ─────────────────────────────────────────────────────────
 
@@ -159,7 +160,7 @@ func rawResponseFilename(rawURL string) string {
 		}
 		filename.WriteRune(r)
 	}
-	return filename.String()
+	return filename.String() + "." + rawExtension
 }
 
 func rawResponsePath(label string, rawURL string) string {

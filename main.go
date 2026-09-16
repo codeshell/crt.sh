@@ -296,9 +296,6 @@ func fetchCertspotter(domain string) ([]string, error) {
 
 	for {
 		page++
-		if page > 1 && !quietMode {
-			fmt.Fprintf(os.Stderr, cDim+"         certspotter  page %d...\r"+cReset, page)
-		}
 		u := "https://api.certspotter.com/v1/issuances?domain=" +
 			url.QueryEscape(domain) +
 			"&include_subdomains=true&expand=dns_names"
@@ -477,15 +474,13 @@ func huntDomain(domain string, skip map[string]bool, onFresh func([]string)) Hun
 
 	globalSeen := make(map[string]struct{})
 	var allNames []string
-	subLinesCount := 0 // lines printed below source block (header + subdomain lines)
-	headerPrinted := false
 
 	for r := range ch {
 		stat := SourceStats{DurationMs: r.durationMs}
 
 		if !quietMode {
 			idx := sourceIdx[r.name]
-			goUp := (n - idx) + subLinesCount
+			goUp := n - idx
 			fmt.Fprintf(os.Stderr, "\033[%dA\033[2K\r", goUp)
 			if r.err != nil {
 				fmt.Fprintf(os.Stderr, "    "+cRed+"✗"+cReset+"  %-14s "+cDim+"→ error: %v [%dms]"+cReset,
@@ -508,17 +503,6 @@ func huntDomain(domain string, skip map[string]bool, onFresh func([]string)) Hun
 			result.Sources[r.name] = stat
 			allNames = append(allNames, fresh...)
 			fmt.Fprintf(os.Stderr, "\033[%dB\r", goUp)
-			if len(fresh) > 0 {
-				if !headerPrinted {
-					fmt.Fprintf(os.Stderr, "\n"+cBold+cGreen+"[+]"+cReset+" "+cBold+"Results"+cReset+"\n")
-					subLinesCount += 2
-					headerPrinted = true
-				}
-				for _, sub := range fresh {
-					fmt.Fprintln(os.Stderr, sub)
-					subLinesCount++
-				}
-			}
 		} else {
 			// Quiet mode: stream via onFresh callback
 			if r.err != nil {
@@ -539,6 +523,12 @@ func huntDomain(domain string, skip map[string]bool, onFresh func([]string)) Hun
 	}
 
 	sort.Strings(allNames)
+	if !quietMode && len(allNames) > 0 {
+		fmt.Fprintf(os.Stderr, "\n"+cBold+cGreen+"[+]"+cReset+" "+cBold+"Results"+cReset+"\n")
+		for _, sub := range allNames {
+			fmt.Fprintln(os.Stderr, sub)
+		}
+	}
 	result.Subdomains = allNames
 	result.Total = len(allNames)
 	return result

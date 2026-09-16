@@ -15,6 +15,7 @@ dist/
 *_ct.json
 *_burp_scope.json
 test_*.json
+export/
 
 # OS
 .DS_Store

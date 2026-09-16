@@ -47,6 +47,11 @@ const (
 	formatBurp
 )
 
+const defaultOutPath = "export"
+const rawResponseDir = "raw"
+const rawResponseHistoryDir = "history"
+const historyTimestampFormat = "20060102T150405Z"
+
 // ── Result structures ─────────────────────────────────────────────────────────
 
 type SourceStats struct {
@@ -86,9 +91,11 @@ type burpProject struct {
 // ── Globals ───────────────────────────────────────────────────────────────────
 
 var (
-	quietMode  bool
-	httpClient *http.Client
-	updateCh   = make(chan string, 1)
+	quietMode   bool
+	verboseMode bool
+	forceMode   bool
+	httpClient  *http.Client
+	updateCh    = make(chan string, 1)
 )
 
 // ── Logging ───────────────────────────────────────────────────────────────────
@@ -143,7 +150,56 @@ func cleanDomainInput(d string) (string, error) {
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
-func httpGet(rawURL string) ([]byte, error) {
+func rawResponseFilename(rawURL string) string {
+	var filename strings.Builder
+	for _, r := range rawURL {
+		if r < 32 || strings.ContainsRune(`< > : " / \ | ? *`, r) {
+			filename.WriteByte('_')
+			continue
+		}
+		filename.WriteRune(r)
+	}
+	return filename.String()
+}
+
+func rawResponsePath(label string, rawURL string) string {
+	return filepath.Join(defaultOutPath, rawResponseDir, label, rawResponseFilename(rawURL))
+}
+
+func rawResponseHistoryPath(label string, rawURL string) string {
+	historyName := time.Now().UTC().Format(historyTimestampFormat) + "_" + rawResponseFilename(rawURL)
+	return filepath.Join(defaultOutPath, rawResponseHistoryDir, label, historyName)
+}
+
+func saveRawResponse(rawURL string, label string, data []byte) {
+	cachePath := rawResponsePath(label, rawURL)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err != nil {
+		logWarn("Cannot create raw response directory: %v", err)
+		return
+	}
+	if err := os.WriteFile(cachePath, data, 0644); err != nil {
+		logWarn("Cannot save raw response %s: %v", cachePath, err)
+		return
+	}
+
+	historyPath := rawResponseHistoryPath(label, rawURL)
+	if err := os.MkdirAll(filepath.Dir(historyPath), 0755); err != nil {
+		logWarn("Cannot create raw response history directory: %v", err)
+		return
+	}
+	if err := os.WriteFile(historyPath, data, 0644); err != nil {
+		logWarn("Cannot save raw response history %s: %v", historyPath, err)
+	}
+}
+
+func httpGet(rawURL string, label string) ([]byte, error) {
+	if !forceMode {
+		cachePath := rawResponsePath(label, rawURL)
+		if data, err := os.ReadFile(cachePath); err == nil {
+			return data, nil
+		}
+	}
+
 	req, err := http.NewRequest("GET", rawURL, nil)
 	if err != nil {
 		return nil, err
@@ -160,14 +216,19 @@ func httpGet(rawURL string) ([]byte, error) {
 	if resp.StatusCode != 200 {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	return io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	saveRawResponse(rawURL, label, data)
+	return data, nil
 }
 
 // ── Source: crt.sh ────────────────────────────────────────────────────────────
 
 func fetchCrtsh(domain string) ([]string, error) {
 	u := "https://crt.sh/?q=%25." + url.QueryEscape(domain) + "&output=json"
-	data, err := httpGet(u)
+	data, err := httpGet(u, domain)
 	if err != nil {
 		return nil, err
 	}
@@ -206,7 +267,7 @@ func fetchCrtsh(domain string) ([]string, error) {
 
 func fetchCrtshOrg(org string) ([]string, error) {
 	u := "https://crt.sh/?O=" + url.QueryEscape(org) + "&output=json"
-	data, err := httpGet(u)
+	data, err := httpGet(u, org)
 	if err != nil {
 		return nil, err
 	}
@@ -306,7 +367,7 @@ func fetchCertspotter(domain string) ([]string, error) {
 			u += "&after=" + url.QueryEscape(after)
 		}
 
-		data, err := httpGet(u)
+		data, err := httpGet(u, domain)
 		if err != nil {
 			return out, err
 		}
@@ -343,7 +404,7 @@ func fetchCertspotter(domain string) ([]string, error) {
 
 func fetchCrtname(domain string) ([]string, error) {
 	u := "https://crt.name/v1/search?apex=" + url.QueryEscape(domain)
-	data, err := httpGet(u)
+	data, err := httpGet(u, domain)
 	if err != nil {
 		return nil, err
 	}
@@ -363,7 +424,7 @@ func fetchCrtname(domain string) ([]string, error) {
 
 func fetchShodanCTL(domain string) ([]string, error) {
 	u := "https://ctl.shodan.io/api/v1/domain/" + url.QueryEscape(domain) + "/hostnames"
-	data, err := httpGet(u)
+	data, err := httpGet(u, domain)
 	if err != nil {
 		return nil, err
 	}
@@ -628,6 +689,9 @@ func printBanner() {
 // ── Update system ─────────────────────────────────────────────────────────────
 
 func checkUpdate() {
+	if !verboseMode {
+		return
+	}
 	client := &http.Client{Timeout: 8 * time.Second}
 	req, err := http.NewRequest("GET", "https://api.github.com/repos/az7rb/crt.sh/releases/latest", nil)
 	if err != nil {
@@ -668,7 +732,7 @@ func checkUpdate() {
 }
 
 func printUpdateNotice() {
-	if quietMode {
+	if quietMode || !verboseMode {
 		return
 	}
 	select {
@@ -745,9 +809,9 @@ func selfUpdate() {
 	case strings.HasSuffix(assetName, ".tar.gz"):
 		binData, err = extractTarGz(dlResp.Body)
 	case strings.HasSuffix(assetName, ".zip"):
-		raw, rerr := io.ReadAll(dlResp.Body)
-		if rerr != nil {
-			fmt.Fprintf(os.Stderr, cRed+"[!]"+cReset+" Read error: %v\n", rerr)
+		raw, raw_err := io.ReadAll(dlResp.Body)
+		if raw_err != nil {
+			fmt.Fprintf(os.Stderr, cRed+"[!]"+cReset+" Read error: %v\n", raw_err)
 			os.Exit(1)
 		}
 		binData, err = extractZip(raw)
@@ -839,6 +903,8 @@ func autoFilename(domains []string, fmt outputFormat) string {
 	if len(base) > 40 {
 		base = base[:40]
 	}
+	base = filepath.Join(defaultOutPath, base)
+
 	switch fmt {
 	case formatJSON:
 		return base + "_ct.json"
@@ -852,16 +918,18 @@ func autoFilename(domains []string, fmt outputFormat) string {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 func main() {
-	domainFlag  := flag.String("d", "", "Target domain (comma-separated for multiple)")
-	listFlag    := flag.String("l", "", "File containing one domain per line")
-	orgFlag     := flag.String("O", "", "Organization name (use + for spaces, e.g. -O \"Google LLC\")")
-	outputFlag  := flag.String("o", "", "Output file (auto-named if -f is set without -o)")
-	appendFlag  := flag.Bool("a", false, "Append to output file")
-	formatFlag  := flag.String("f", "txt", "Output format: txt | json | burp")
+	domainFlag := flag.String("d", "", "Target domain (comma-separated for multiple)")
+	listFlag := flag.String("l", "", "File containing one domain per line")
+	orgFlag := flag.String("O", "", "Organization name (use + for spaces, e.g. -O \"Google LLC\")")
+	outputFlag := flag.String("o", "", "Output file (auto-named if -f is set without -o)")
+	appendFlag := flag.Bool("a", false, "Append to output file")
+	formatFlag := flag.String("f", "txt", "Output format: txt | json | burp")
 	timeoutFlag := flag.Int("t", 30, "HTTP timeout per source in seconds")
-	skipFlag    := flag.String("s", "", "Skip sources: comma-separated (e.g. crt.sh,crt.name)")
+	skipFlag := flag.String("s", "", "Skip sources: comma-separated (e.g. crt.sh,crt.name)")
 	flag.BoolVar(&quietMode, "q", false, "Quiet: only print results, no UI (useful for piping)")
-	updateFlag  := flag.Bool("update", false, "Update crt.sh to the latest version")
+	flag.BoolVar(&forceMode, "force", false, "Force: Ignore cached responses and fetch new from sources")
+	flag.BoolVar(&verboseMode, "verbose", false, "Verbose: enable update checks")
+	updateFlag := flag.Bool("update", false, "Update crt.sh to the latest version")
 
 	flag.Usage = func() {
 		printBanner()
@@ -881,11 +949,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -s  <sources>  Skip sources: crt.sh, certspotter, crt.name, shodan-ctl\n")
 		fmt.Fprintf(os.Stderr, "  -t  <sec>      HTTP timeout per source (default: 30)\n")
 		fmt.Fprintf(os.Stderr, "  -q             Quiet mode: only print found subdomains\n")
+		fmt.Fprintf(os.Stderr, "  -verbose       Verbose: enable update checks\n")
 		fmt.Fprintf(os.Stderr, "  -update        Update to the latest version\n")
 		fmt.Fprintf(os.Stderr, "  -h             Show this help\n\n")
 	}
 	flag.Parse()
-
 
 	if *updateFlag {
 		selfUpdate()
@@ -953,6 +1021,11 @@ func main() {
 				add(line)
 			}
 		}
+		if sc.Err() != nil {
+			logWarn("Error while reading file: %v", err)
+			os.Exit(1)
+		}
+
 	}
 
 	// Org mode: query crt.sh by organization, then exit

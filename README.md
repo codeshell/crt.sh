@@ -34,7 +34,7 @@ go install github.com/az7rb/crt.sh/v3@latest
 **Download binary** — grab a prebuilt release for your OS from [Releases](https://github.com/az7rb/crt.sh/releases/latest):
 
 | OS | File |
-|---|---|
+| --- | --- |
 | Linux amd64 | `crt.sh_*_linux_amd64.tar.gz` |
 | Linux arm64 | `crt.sh_*_linux_arm64.tar.gz` |
 | macOS amd64 | `crt.sh_*_darwin_amd64.tar.gz` |
@@ -146,6 +146,14 @@ api.hackerone.com
 }
 ```
 
+### Raw response cache
+
+Raw responses are saved under `raw/` using a deterministic filename derived from
+the request URL. Re-running the same request loads that file instead of making a
+new web request. Each newly fetched response is also copied to `history/` with a
+UTC timestamp, so the matching file in `raw/` can be deleted when a fresh request
+is needed without losing the previous response.
+
 ---
 
 ## Sources
@@ -153,7 +161,7 @@ api.hackerone.com
 All four queried simultaneously — total scan time equals the slowest source, not the sum.
 
 | Source | Provider | Method |
-|---|---|---|
+| --- | --- | --- |
 | [crt.sh](https://crt.sh) | Sectigo | JSON API · `%.domain` wildcard |
 | [certspotter](https://sslmate.com/certspotter) | SSLMate | JSON + auto-pagination |
 | [crt.name](https://crt.name) | Independent | Reads Google Argon, Sectigo, Cloudflare CT |

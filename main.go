@@ -48,11 +48,9 @@ const (
 )
 
 const defaultOutPath = "export"
-
-var (
-	rawResponseDir        = filepath.Join(defaultOutPath, "raw")
-	rawResponseHistoryDir = filepath.Join(defaultOutPath, "history")
-)
+const rawResponseDir = "raw"
+const rawResponseHistoryDir = "history"
+const historyTimestampFormat = "20060102T150405Z"
 
 // ── Result structures ─────────────────────────────────────────────────────────
 
@@ -93,10 +91,11 @@ type burpProject struct {
 // ── Globals ───────────────────────────────────────────────────────────────────
 
 var (
-	quietMode  bool
-	httpClient *http.Client
-	updateCh   = make(chan string, 1)
-	verbose    bool
+	quietMode   bool
+	verboseMode bool
+	forceMode   bool
+	httpClient  *http.Client
+	updateCh    = make(chan string, 1)
 )
 
 // ── Logging ───────────────────────────────────────────────────────────────────
@@ -151,7 +150,7 @@ func cleanDomainInput(d string) (string, error) {
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
 
-func rawResponseFilename(label string, rawURL string) string {
+func rawResponseFilename(rawURL string) string {
 	var filename strings.Builder
 	for _, r := range rawURL {
 		if r < 32 || strings.ContainsRune(`< > : " / \ | ? *`, r) {
@@ -160,13 +159,21 @@ func rawResponseFilename(label string, rawURL string) string {
 		}
 		filename.WriteRune(r)
 	}
-	return filepath.Join(label, filename.String())
+	return filename.String()
+}
+
+func rawResponsePath(label string, rawURL string) string {
+	return filepath.Join(defaultOutPath, rawResponseDir, label, rawResponseFilename(rawURL))
+}
+
+func rawResponseHistoryPath(label string, rawURL string) string {
+	historyName := time.Now().UTC().Format(historyTimestampFormat) + "_" + rawResponseFilename(rawURL)
+	return filepath.Join(defaultOutPath, rawResponseHistoryDir, label, historyName)
 }
 
 func saveRawResponse(rawURL string, label string, data []byte) {
-	filename := rawResponseFilename(label, rawURL)
-	cachePath := filepath.Join(rawResponseDir, filename)
-	if err := os.MkdirAll(rawResponseDir, 0755); err != nil {
+	cachePath := rawResponsePath(label, rawURL)
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0755); err != nil {
 		logWarn("Cannot create raw response directory: %v", err)
 		return
 	}
@@ -175,21 +182,22 @@ func saveRawResponse(rawURL string, label string, data []byte) {
 		return
 	}
 
-	if err := os.MkdirAll(rawResponseHistoryDir, 0755); err != nil {
+	historyPath := rawResponseHistoryPath(label, rawURL)
+	if err := os.MkdirAll(filepath.Dir(historyPath), 0755); err != nil {
 		logWarn("Cannot create raw response history directory: %v", err)
 		return
 	}
-	historyName := time.Now().UTC().Format("20060102T150405.000000000Z") + "_" + filename
-	historyPath := filepath.Join(rawResponseHistoryDir, historyName)
 	if err := os.WriteFile(historyPath, data, 0644); err != nil {
 		logWarn("Cannot save raw response history %s: %v", historyPath, err)
 	}
 }
 
 func httpGet(rawURL string, label string) ([]byte, error) {
-	cachePath := filepath.Join(rawResponseDir, rawResponseFilename(label, rawURL))
-	if data, err := os.ReadFile(cachePath); err == nil {
-		return data, nil
+	if !forceMode {
+		cachePath := rawResponsePath(label, rawURL)
+		if data, err := os.ReadFile(cachePath); err == nil {
+			return data, nil
+		}
 	}
 
 	req, err := http.NewRequest("GET", rawURL, nil)
@@ -681,7 +689,7 @@ func printBanner() {
 // ── Update system ─────────────────────────────────────────────────────────────
 
 func checkUpdate() {
-	if !verbose {
+	if !verboseMode {
 		return
 	}
 	client := &http.Client{Timeout: 8 * time.Second}
@@ -724,7 +732,7 @@ func checkUpdate() {
 }
 
 func printUpdateNotice() {
-	if quietMode || !verbose {
+	if quietMode || !verboseMode {
 		return
 	}
 	select {
@@ -919,7 +927,8 @@ func main() {
 	timeoutFlag := flag.Int("t", 30, "HTTP timeout per source in seconds")
 	skipFlag := flag.String("s", "", "Skip sources: comma-separated (e.g. crt.sh,crt.name)")
 	flag.BoolVar(&quietMode, "q", false, "Quiet: only print results, no UI (useful for piping)")
-	flag.BoolVar(&verbose, "verbose", false, "Verbose: enable update checks")
+	flag.BoolVar(&forceMode, "force", false, "Force: Ignore cached responses and fetch new from sources")
+	flag.BoolVar(&verboseMode, "verbose", false, "Verbose: enable update checks")
 	updateFlag := flag.Bool("update", false, "Update crt.sh to the latest version")
 
 	flag.Usage = func() {
